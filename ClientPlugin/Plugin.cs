@@ -1,22 +1,25 @@
-﻿using System.Reflection;
+﻿using System;
+using System.Collections.Generic;
+using System.Reflection;
+using ClientPlugin.Anomaly;
+using ClientPlugin.RichHud;
 using ClientPlugin.Settings;
 using ClientPlugin.Settings.Layouts;
-using HarmonyLib;
 using Sandbox.Graphics.GUI;
 using VRage.Plugins;
+using VRage.Utils;
 
-// Define assembly version when compiled by Pulsar
 #if !LOCAL_BUILD
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
 #endif
-    
+
 namespace ClientPlugin;
 
 // ReSharper disable once UnusedType.Global
 public class Plugin : IPlugin
 {
-    public const string Name = "ClientPluginTemplate";
+    public const string Name = "Shadows";
     public static Plugin Instance { get; private set; }
     private SettingsGenerator settingsGenerator;
 
@@ -25,23 +28,35 @@ public class Plugin : IPlugin
     {
         Instance = this;
         Instance.settingsGenerator = new SettingsGenerator();
-
-        // TODO: Put your one time initialization code here.
-        var harmony = new Harmony(Name);
-        harmony.PatchAll(Assembly.GetExecutingAssembly());
+        AnomalyTerminalHook.TryInstall();
     }
 
     public void Dispose()
     {
-        // TODO: Save state and close resources here, called when the game exits (not guaranteed!)
-        // IMPORTANT: Do NOT call harmony.UnpatchAll() here! It may break other plugins.
-
+        ConfigStorage.FlushPending(true);
         Instance = null;
     }
 
     public void Update()
     {
-        // TODO: Put your update code here. It is called on every simulation frame!
+        AnomalyTerminalHook.TryInstall();
+        ConfigStorage.FlushPending();
+    }
+
+    // ReSharper disable once UnusedMember.Global
+    public void LoadAssets(IReadOnlyDictionary<string, string> assets)
+    {
+        if (assets != null && assets.TryGetValue("AnomalyPack", out var root))
+            AnomalyBridge.TryRegisterPack(root);
+        else
+            MyLog.Default.Warning($"{Name}: AnomalyPack asset missing");
+        AnomalyTerminalHook.TryInstall();
+    }
+
+    // ReSharper disable once UnusedMember.Global
+    public void LoadAssets(string folder)
+    {
+        // Named AnomalyPack is registered from the dictionary overload.
     }
 
     // ReSharper disable once UnusedMember.Global
@@ -50,10 +65,4 @@ public class Plugin : IPlugin
         Instance.settingsGenerator.SetLayout<Simple>();
         MyGuiSandbox.AddScreen(Instance.settingsGenerator.Dialog);
     }
-
-    //TODO: Uncomment and use this method to load asset files
-    /*public void LoadAssets(string folder)
-    {
-
-    }*/
 }

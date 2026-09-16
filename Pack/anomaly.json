@@ -1,0 +1,30 @@
+{
+  "id": "screenspace.shadows",
+  "name": "Screen Space Shadows",
+  "passes": [
+    {
+      "id": "screenspace.shadows.contact",
+      "slot": "AfterLighting",
+      "file": "Fullscreen/AfterLighting/PointContactShadows.hlsl",
+      "compose": "IsolatedSub",
+      "temporal": ["InColor", "Reactive"],
+      "binds": [
+        { "catalog": "historyDepth", "slot": 7 },
+        { "catalog": "occupancy", "slot": 8 },
+        { "catalog": "pointShadowAtlas", "slot": 9 }
+      ]
+    },
+    {
+      "id": "screenspace.shadows.debug",
+      "slot": "AfterLighting",
+      "file": "Fullscreen/AfterLighting/PointContactShadows.hlsl",
+      "compose": "Replace",
+      "temporal": ["InColor"],
+      "binds": [
+        { "catalog": "historyDepth", "slot": 7 },
+        { "catalog": "occupancy", "slot": 8 },
+        { "catalog": "pointShadowAtlas", "slot": 9 }
+      ]
+    }
+  ]
+}

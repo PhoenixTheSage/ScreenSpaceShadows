@@ -1,120 +1,118 @@
 using ClientPlugin.Settings;
 using ClientPlugin.Settings.Elements;
-using Sandbox.Graphics.GUI;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Text;
-using ClientPlugin.Settings.Tools;
-using VRage.Input;
-using VRageMath;
-
 
 namespace ClientPlugin;
 
-public enum ExampleEnum
+public enum ShadowQuality
 {
-    FirstAlpha,
-    SecondBeta,
-    ThirdGamma,
-    AndTheDelta,
-    Epsilon
+    Low,
+    Medium,
+    High,
+    Ultra,
 }
 
 public class Config : INotifyPropertyChanged
 {
     #region Options
 
-    // TODO: Define your configuration options and their default values
-    private bool toggle = true;
-    private int integer = 2;
-    private float number = 0.1f;
-    private string text = "Default Text";
-    private ExampleEnum dropdown = ExampleEnum.FirstAlpha;
-    private Color color = Color.Cyan;
-    private Color colorWithAlpha = new Color(0.8f, 0.6f, 0.2f, 0.5f);
-    private Binding keybind = new Binding(MyKeys.None);
+    private bool enabled = true;
+    private float intensity = 1f;
+    private ShadowQuality quality = ShadowQuality.Medium;
+    private float thickness = 0.5f;
+    private float maxDistance;
+    private bool debugOverlay;
+    private bool useTemporal;
+    private bool useOccupancy;
+    private bool useLightViews;
+    private int cubeLightCap = 4;
 
     #endregion
 
     #region User interface
 
-    // TODO: Settings dialog title
-    public readonly string Title = "Config Demo";
+    public readonly string Title = "Screen Space Shadows";
 
-    [Separator("Some settings")]
-        
-    // TODO: Settings dialog controls, one property for each configuration option
+    [Separator("Point-light contact shadows")]
 
-    [Checkbox(description: "Checkbox Tooltip")]
-    public bool Toggle
+    [Checkbox(description: "Master switch for screen-space point-light contact shadows")]
+    public bool Enabled
     {
-        get => toggle;
-        set => SetField(ref toggle, value);
+        get => enabled;
+        set => SetField(ref enabled, value);
     }
 
-    [Slider(-1f, 10f, 1f, SliderAttribute.SliderType.Integer, description: "Integer Slider Tooltip")]
-    public int Integer
+    [Slider(0f, 1f, 0.01f, SliderAttribute.SliderType.Float, description: "How much point-light energy the contact shadow removes")]
+    public float Intensity
     {
-        get => integer;
-        set => SetField(ref integer, value);
+        get => intensity;
+        set => SetField(ref intensity, value);
     }
 
-    [Slider(-5f, 4.5f, 0.5f, SliderAttribute.SliderType.Float, description: "Float Slider Tooltip")]
-    public float Number
+    [Dropdown(description: "March steps, lights per pixel, and default ray distance")]
+    public ShadowQuality Quality
     {
-        get => number;
-        set => SetField(ref number, value);
+        get => quality;
+        set => SetField(ref quality, value);
     }
 
-    [Textbox(description: "Textbox Tooltip")]
-    public string Text
+    [Slider(0.15f, 2f, 0.05f, SliderAttribute.SliderType.Float, description: "Occluder thickness along the ray in meters. Character-scale needs ~0.5; the march uses at least 0.5")]
+    public float Thickness
     {
-        get => text;
-        set => SetField(ref text, value);
+        get => thickness;
+        set => SetField(ref thickness, value);
     }
 
-    [Dropdown(description: "Dropdown Tooltip")]
-    public ExampleEnum Dropdown
+    [Slider(0f, 16f, 0.25f, SliderAttribute.SliderType.Float, label: "Max distance", description: "Ray length in meters. 0 uses the quality preset (Low 3 / Medium 6 / High 8 / Ultra 12)")]
+    public float MaxDistance
     {
-        get => dropdown;
-        set => SetField(ref dropdown, value);
+        get => maxDistance;
+        set => SetField(ref maxDistance, value);
     }
 
-    [Separator("More settings")]
-        
-    [Color(description: "RGB color")]
-    public Color Color
+    [Checkbox(description: "Replace LBuffer: magenta=no depth, cyan=no Frame tiles, blue=empty tile, green=lit, red=shadow with energy, yellow=occluded but nothing to subtract")]
+    public bool DebugOverlay
     {
-        get => color;
-        set => SetField(ref color, value);
+        get => debugOverlay;
+        set => SetField(ref debugOverlay, value);
     }
 
-    [Color(hasAlpha: true, description: "RGBA color")]
-    public Color ColorWithAlpha
+    [Separator("Around corners")]
+
+    [Checkbox(description: "Reproject last-frame linear depth while marching (reduces flicker; still camera-fed)")]
+    public bool UseTemporal
     {
-        get => colorWithAlpha;
-        set => SetField(ref colorWithAlpha, value);
+        get => useTemporal;
+        set => SetField(ref useTemporal, value);
     }
 
-    [Keybind(description: "Keybind Tooltip - Unbind by right clicking the button")]
-    public Binding Keybind
+    [Checkbox(description: "March the camera-relative occupancy clipmap (2 m voxels; around-corner boxes). Off by default — too coarse for character contact")]
+    public bool UseOccupancy
     {
-        get => keybind;
-        set => SetField(ref keybind, value);
+        get => useOccupancy;
+        set => SetField(ref useOccupancy, value);
     }
 
-    [Button(description: "Button Tooltip")]
-    public void Button()
+    [Checkbox(description: "Light-view AABB depth for selected point lights — the only layer that shadows never-seen occluders")]
+    public bool UseLightViews
     {
-        MyGuiSandbox.AddScreen(MyGuiSandbox.CreateMessageBox(
-            MyMessageBoxStyleEnum.Info,
-            buttonType: MyMessageBoxButtonsType.OK,
-            messageText: new StringBuilder("You clicked me!"),
-            messageCaption: new StringBuilder("Custom Button Function"),
-            size: new Vector2(0.6f, 0.5f)
-        ));
+        get => useLightViews;
+        set => SetField(ref useLightViews, value);
     }
+
+    [Slider(0f, 64f, 1f, SliderAttribute.SliderType.Integer, label: "Light-view cap", description: "How many closest point lights get a cube atlas. Default 4 for wide hardware. 0 disables cubes. Max 64.")]
+    public int CubeLightCap
+    {
+        get => cubeLightCap;
+        set => SetField(ref cubeLightCap, value);
+    }
+
+    [Separator("Status")]
+
+    [Button(label: "Show Status", description: "Compose, dest, last IsolatedSub merge/skip, catalog binds")]
+    public static void ShowStatus() => Shadows.ShadowsStatus.Show();
 
     #endregion
 

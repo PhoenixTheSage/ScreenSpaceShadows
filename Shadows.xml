@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<PluginData xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="GitHubPlugin">
+
+    <Id>6846BDD7-7621-470B-933A-591FCB048626</Id>
+
+    <RepoId>PhoenixTheSage/ScreenSpaceShadows</RepoId>
+
+    <FriendlyName>Screen Space Shadows</FriendlyName>
+
+    <Author>PhoenixTheSage</Author>
+
+    <Tooltip>Screen-space contact shadows for Space Engineers point lights (requires Anomaly).</Tooltip>
+
+    <Description>Adds screen-space contact shadows for omni/point lights. Vanilla SE only shadows the sun and up to four spots; this pack darkens only point-light energy at AfterLighting.
+
+Requires the Anomaly Shader Framework. Configure under Anomaly Shaders → Screen Space Shadows → Settings (Rich HUD Master) or the Pulsar plugin dialog.
+    </Description>
+
+    <SourceDirectories>
+        <Directory>ClientPlugin</Directory>
+    </SourceDirectories>
+
+    <DependencyIds>
+        <Id>A9C29274-E447-49EE-881B-C980E6D190FD</Id>
+    </DependencyIds>
+
+    <Asset Name="AnomalyPack" Path="Pack" />
+
+    <Commit>TODO Git commit hash</Commit>
+
+</PluginData>

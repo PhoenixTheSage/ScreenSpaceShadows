@@ -1,154 +1,48 @@
-# Space Engineers Client Plugin Template
+# Screen Space Shadows
 
-[Server/Client version of the template](https://github.com/viktor-ferenczi/se-server-plugin-template)
+Anomaly pack that adds **point / omni light shadows** for Space Engineers. Vanilla SE only shadows the sun (CSM) and up to four spots; tiled point lights are unshadowed. This pack contact-marches those lights at `AfterLighting` and IsolatedSub-darkens `LBuffer` where the march hits.
 
-## Prerequisites
+Requires [Anomaly](https://github.com/PhoenixTheSage/Anomaly). This is a normal Pulsar plugin with `DependencyIds` pointing at Anomaly — not a Hidden plugin.
 
-- [Space Engineers](https://store.steampowered.com/app/244850/Space_Engineers/)
-- [Python 3.12](https://python.org) (requires 3.12 or newer)
-- [Pulsar](https://github.com/SpaceGT/Pulsar)
-- [.NET Framework 4.8.1 Developer Pack](https://dotnet.microsoft.com/en-us/download/dotnet-framework/net481) and
-  [.NET 10 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
+## What it does
 
-## Create your plugin project
+After Keen’s tiled point-light pass, Anomaly publishes the live GPU buffers as catalog `pointLights` and `tileIndices`. This pack’s `Fullscreen/AfterLighting/PointContactShadows.hlsl` walks the same 16×16 tiles as `Lighting/LightPoint.hlsl`, evaluates matching unshadowed radiance, then contact-marches `linearDepth` toward each light. Optional layers (off by default):
 
-1. Click on **Use this template** (top right corner on GitHub) and follow the wizard to create your repository
-2. Clone your repository to have a local working copy
-3. Run `setup.py`, enter the name of your plugin project in `CapitalizedWords` format
-4. Let `setup.py` auto-detect your install location or fill it in manually
-5. Open the solution in Visual Studio or Rider
-6. Make a test build, the plugin's DLL should be deployed (see the build log for the path)
-7. Test that the empty plugin can be enabled in Pulsar
-8. Replace the contents of this file with the description of your plugin
-9. Follow the TODO comments in the source code and implement your plugin
+1. **Contact** (always) — ray-march this-frame `linearDepth` toward the light. Hits only occluders closer to the camera than the receiver, so the floor does not self-shadow.
+2. **Temporal** — reproject last-frame `historyDepth` (`AnomalyPrevViewProj`). Helps flicker; still camera-fed.
+3. **Occupancy** — 64³ camera-relative clipmap (2 m voxels). Around-corner boxes only; too coarse for character contact.
+4. **Light-view maps** — AABB boxes rasterized from the closest N point lights into `pointShadowAtlas`. **This is the only layer that shadows occluders the camera has never seen.** Cap default **4**, max **64**.
 
-In case of questions please feel free to ask the SE plugin developer community on the
-[Pulsar](https://discord.gg/z8ZczP2YZY) Discord server in their relevant text channels. 
-They also have dedicated channels for plugin ideas, should you look for a new one.
+Compose is **IsolatedSub**: the shader writes `(1 − minVis) × Intensity` (0–1 dest fraction via `AnomalyIsolatedSub`). Anomaly blends that occupancy onto `LBuffer` with `dest*(1-src)` (same dest RTV as debug Replace). `temporal` is `InColor`+`Reactive` so Anomaly stamps `reactiveMask` from `.a`. Debug overlay is a separate **Replace** (vis false-color); it does not sample t0. Rich HUD **Anomaly Shaders → Screen Space Shadows → Status** (or Pulsar plugin options → Status) shows compose, dest, last merge/skip, and catalog binds.
 
-_Good luck!_
+## Settings
 
-## Remarks
+Dual config, one `Config.Current` (`Profile/Storage/Shadows.cfg`):
 
-### Plugin version
+| UI | Where |
+|----|--------|
+| Rich HUD | **Anomaly Shaders → Screen Space Shadows → Settings** |
+| Pulsar | plugin config dialog |
 
-The plugin version lives in `Version.Build.props`, which **is** committed and imported by
-`Directory.Build.props`. Keeping the version separate from the local path overrides means it
-is shared by all contributors and stays under version control. Bump the version there.
+Controls: Enabled, Intensity, Quality, Thickness, Max distance, Debug overlay, Temporal depth, Occupancy clipmap, Light-view maps, **Light-view cap** (0–64). Occupancy, temporal, and light-views default **off**.
 
-### Folder path overrides
+Quality presets (contact march uniforms, not shader permutations):
 
-`Directory.Build.props` **is** committed and declares the overridable folder paths with empty
-defaults:
+| Quality | Steps | March lights | Ray distance |
+|---------|-------|--------------|--------------|
+| Low | 8 | 8 | 3 m |
+| Medium | 16 | 16 | 6 m |
+| High | 24 | 16 | 8 m |
+| Ultra | 24 | 24 | 12 m |
 
-- `Bin64` — the folder containing `SpaceEngineers.exe`
-- `Pulsar` — the Pulsar folder the plugin is deployed into after each build
+Quality **March lights** is how many of the brightest tile lights get a contact ray. The shader still evaluates up to 128 tile lights for the vis mask. Tile lists are unsorted; `maxTileLights` is the global stride, not a per-tile cap.
 
-It optionally imports `Directory.Build.props.user` from the repository root, which is **not
-committed** (matched by `*.user` in `.gitignore`), so each contributor keeps their own local
-paths there.
+March step count is also scaled by Anomaly `AnomalySafetyScale` (camera translation / look). Do not globally floor that scale.
 
-To override a path manually, copy the first `PropertyGroup` of `Directory.Build.props` into
-`Directory.Build.props.user`, wrapped into a top-level `<Project>` element, and fill in your
-paths. `setup.py` writes that file for you with the auto-detected install location, creating
-it if needed and keeping any other overrides already in it.
+## Build / deploy
 
-Leaving a path empty (or having no `Directory.Build.props.user` at all) falls back to the
-auto-detection in `Directory.Build.props`, which reads the Steam registry keys on Windows and
-the usual Steam locations on Linux, then resolves the game through Steam's `libraryfolders.vdf`,
-so installs on a secondary Steam library are found as well. Pulsar defaults to `%AppData%\Pulsar`
-on Windows and `$XDG_CONFIG_HOME/Pulsar` (or `~/.config/Pulsar`) on Linux.
+`dotnet build` copies `plugin.dll`, `plugin.xml`, and `Pack/` into Pulsar `Local/Shadows`. Enable Anomaly first, then Screen Space Shadows.
 
-The build fails with a clear message if `Bin64` cannot be resolved, and warns instead of failing
-if the Pulsar folder is missing.
+## Out of scope
 
-### Deployment
-
-Each successful build copies itself into Pulsar's `Local` plugin folder, so there is nothing to
-run by hand:
-
-| Build     | Deployed to                                    |
-|-----------|------------------------------------------------|
-| `net48`   | `<Pulsar>/Legacy/Local/<PluginName>/`          |
-| `net10.0` | `<Pulsar>/Interim/Local/<PluginName>/`         |
-
-The DLL is copied as `plugin.dll`, its symbols as `plugin.pdb` and the PluginHub registration
-XML from the repository root as `plugin.xml`, so Pulsar shows the plugin under its friendly name
-and honours the runtime and platform restrictions declared there.
-
-`Interim` is the Pulsar executable running Space Engineers 1 on .NET 10. It falls back to the
-`Legacy` data folder when `<Pulsar>/Interim` does not exist, and so does the deployment.
-(`<Pulsar>/Modern` belongs to Space Engineers 2 and is never a deployment target here.)
-
-### Plugin configuration
-
-You can have a nice configuration dialog with little effort in the game client.
-Customize the `Config` class in the `ClientPlugin` project, just follow the examples.
-It supports many different data types, including key binding. Once you have more
-options than can fit on the screen the dialog will have a vertical scrollbar.
-
-![Example config dialog](Docs/ConfigDialogExample.png "Example config dialog")
-
-### Debugging
-
-- Always use a debug build if you want to set breakpoints and see variable values.
-- A debug build defines `DEBUG`, so you can add conditional code in `#if DEBUG` blocks.
-- While debugging a specific target unload the other two. It prevents the IDE to be confused.
-- If breakpoints do not "stick" or do not work, then make sure that:
-  - Other projects are unloaded, only the debugged one and Shared are loaded.
-  - Debugger is attached to the running process.
-  - You are debugging the code which is running (no code changes made since the build).
-
-### Building and debugging on .NET 10
-
-- Start the game with the `Interim.exe` Pulsar executable with the `-sources` command line option.
-- Click on the Sources button in Pulsar's dialog, then set up a development folder for your plugin.
-- Make sure to fill in the PluginHub registration XML (`YourPluginName.xml` in this repo) and load that as well.
-- Select `Debug` mode and run `Interim.exe`, then attach the debugger. That should allow debugging your plugin.
-- Select `Release` mode to test exactly how Pulsar will build and run your plugin on the player's machine.
-- The registered development folder shows up as a plugin you can select in the plugin list and save into a profile.
-
-#### Separate .NET 10 DLL build and deployment
-
-- Build your plugin for both `net10.0` and `net48`, which happens by default on Windows.
-- Make a copy of the `Legacy` folder as `Interim`, it will have a separate set of everything
-  (profiles, `Local` dir). The build then deploys the two target frameworks side by side.
-- Now you can start `Interim.exe` with debugging and debug the binary build of your plugin as usual.
-
-### Accessing internal, protected and private members in game code
-
-Enable the Krafs publicizer to significantly reduce the amount of reflections you need to write.
-
-This can be done by systematically uncommenting the code sections marked with "Uncomment to enable publicizer support".
-Make sure not to miss any of those. List the game assemblies you need to publicize in `GameAssembliesToPublicize.cs`.
-In case of problems read about the [Krafs Publicizer](https://github.com/krafs/Publicizer) or reach out on the [Pulsar](https://discord.gg/z8ZczP2YZY) Discord server.
-
-### AI assisted plugin development
-
-Please consider using [se-dev-skills](https://github.com/viktor-ferenczi/se-dev-skills/) for better outcomes.
-
-### Troubleshooting
-
-- If the IDE looks confused, then restarting it and the debugged game usually works.
-- If the restart did not work, then try to delete caches used by your IDE and restart.
-- If your build cannot deploy (just runs in a loop), then something locks the DLL file.
-- Look for running game processes (maybe stuck running in the background) and kill them.
-
-### Release
-
-- Always make your final release from a RELEASE build. (More optimized, removes debug code.)
-- Always test your RELEASE build before publishing. Sometimes it behaves differently.
-- In case of client plugins the Pulsar compiles your code, watch out for differences.
-
-### Communication
-
-- In your documentation always include how players or server admins should report bugs.
-- Try to be reachable and respond on a timely manner over your communication channels.
-- Be open for constructive critics.
-
-### Abandoning your project
-
-- Always consider finding a new maintainer, ask around at least once.
-- If you ever abandon the project, then make it clear on its GitHub page.
-- Abandoned projects should be made hidden on PluginHub and Torch's plugin list.
-- Keep the code available on GitHub, so it can be forked and continued by others.
+Spot and sun shadows (already in vanilla). Overlay of `Lighting/LightPoint.hlsl`. Pack-side Harmony or a publicizer. Full mesh light-view raster (Anomaly draws actor AABBs, not Keen meshes). A full Hi-Z mip chain (Anomaly `hiZ` is a single half-res min of `linearDepth`).
