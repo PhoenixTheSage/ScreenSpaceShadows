@@ -1,48 +1,69 @@
 # Screen Space Shadows
 
-Anomaly pack that adds **point / omni light shadows** for Space Engineers. Vanilla SE only shadows the sun (CSM) and up to four spots; tiled point lights are unshadowed. This pack contact-marches those lights at `AfterLighting` and IsolatedSub-darkens `LBuffer` where the march hits.
+An Anomaly pack for point/omni-light shadows in Space Engineers. Normal Pulsar
+plugin, dependent on Anomaly. Sun and spotlight shadows remain engine-owned.
 
-Requires [Anomaly](https://github.com/PhoenixTheSage/Anomaly). This is a normal Pulsar plugin with `DependencyIds` pointing at Anomaly — not a Hidden plugin.
+## Current shadow paths
 
-## What it does
+- **Character atlas:** Anomaly draws one complete opaque, animated character LOD
+  from each selected point light. This includes body/head geometry hidden from
+  the first-person camera. Shared cube sampling uses weighted depth comparisons.
+- **Contact detail:** `AnomalyContactShadows.hlsli` traverses contiguous projected
+  pixel intervals with perspective-correct depth bounds. It rejects the receiver
+  tangent plane instead of imposing an arbitrary camera-depth separation window.
+  The pixel budget truncates a ray rather than creating gaps between samples.
+- **Composition:** remove each light's own shadowed photometric energy through
+  IsolatedSub. Atlas visibility is evaluated for all considered tile lights,
+  independently of the smaller contact top-N budget. The tile evaluation cap
+  remains 64; unsorted overflow is still a limitation.
 
-After Keen’s tiled point-light pass, Anomaly publishes the live GPU buffers as catalog `pointLights` and `tileIndices`. This pack’s `Fullscreen/AfterLighting/PointContactShadows.hlsl` walks the same 16×16 tiles as `Lighting/LightPoint.hlsl`, evaluates matching unshadowed radiance, then contact-marches `linearDepth` toward each light. Optional layers (off by default):
+Previous-frame depth is no longer treated as another occluder. The serialized
+UseTemporal setting is accepted for old configs but ignored and no longer shown.
+Anomaly's normal InColor+Reactive temporal policy remains in place.
 
-1. **Contact** (always) — ray-march this-frame `linearDepth` toward the light. Hits only occluders closer to the camera than the receiver, so the floor does not self-shadow.
-2. **Temporal** — reproject last-frame `historyDepth` (`AnomalyPrevViewProj`). Helps flicker; still camera-fed.
-3. **Occupancy** — 64³ camera-relative clipmap (2 m voxels). Around-corner boxes only; too coarse for character contact.
-4. **Light-view maps** — AABB boxes rasterized from the closest N point lights into `pointShadowAtlas`. **This is the only layer that shadows occluders the camera has never seen.** Cap default **4**, max **64**.
+Optional occupancy and AABB extras are coarse approximations, not detailed world
+shadows. Keep them off when evaluating shadow quality. Detailed offscreen world
+mesh casters remain an Anomaly framework gap.
 
-Compose is **IsolatedSub**: the shader writes `(1 − minVis) × Intensity` (0–1 dest fraction via `AnomalyIsolatedSub`). Anomaly blends that occupancy onto `LBuffer` with `dest*(1-src)` (same dest RTV as debug Replace). `temporal` is `InColor`+`Reactive` so Anomaly stamps `reactiveMask` from `.a`. Debug overlay is a separate **Replace** (vis false-color); it does not sample t0. Rich HUD **Anomaly Shaders → Screen Space Shadows → Status** (or Pulsar plugin options → Status) shows compose, dest, last merge/skip, and catalog binds.
+## Quality and limits
 
-## Settings
+Low: 48 projected pixel intervals, 4 contact lights, 0.5 m contact reach, 256 face.
+Medium: 96 intervals, 6 lights, 1 m, 256 face.
+High: 128 intervals, 8 lights, 1.5 m, 512 face.
+Ultra: 192 intervals, 10 lights, 2 m, 1024 face.
 
-Dual config, one `Config.Current` (`Profile/Storage/Shadows.cfg`):
+Max distance overrides contact reach only. A projected ray can stop earlier when
+its pixel budget is exhausted; its final eight intervals fade. Contact is a local
+supplement and cannot recover geometry missing from screen depth. Thickness is
+a view-depth hit tolerance (0.2–1.2 m), not a light-source softness control.
 
-| UI | Where |
-|----|--------|
-| Rich HUD | **Anomaly Shaders → Screen Space Shadows → Settings** |
-| Pulsar | plugin config dialog |
+Anomaly limits the RGBA32F atlas to roughly 96 MiB and D3D11 texture dimensions.
+The maximum effective light count is 16 at 256, 4 at 512, and 1 at 1024 pixels.
+The requested cap may be larger; Status reports the selected count. This trades
+light coverage for detail at high quality. The default request cap remains four.
+Atlas faces remain view-oriented and use clamped filtering at seams.
 
-Controls: Enabled, Intensity, Quality, Thickness, Max distance, Debug overlay, Temporal depth, Occupancy clipmap, Light-view maps, **Light-view cap** (0–64). Occupancy, temporal, and light-views default **off**.
+## Settings and diagnostics
 
-Quality presets (contact march uniforms, not shader permutations):
+Settings are available in Rich HUD under Anomaly Shaders / Screen Space Shadows
+and in the Pulsar plugin dialog. Both share Profile/Storage/Shadows.cfg.
 
-| Quality | Steps | March lights | Ray distance |
-|---------|-------|--------------|--------------|
-| Low | 8 | 8 | 3 m |
-| Medium | 16 | 16 | 6 m |
-| High | 24 | 16 | 8 m |
-| Ultra | 24 | 24 | 12 m |
+- Shadow source: Combined, ContactOnly or AtlasOnly. Isolated modes bypass the
+  optional occupancy path. AtlasOnly is useful for inspecting the body silhouette.
+- Debug overlay / Debug view: Visibility or AtlasFaces. Six panels are +X, -X,
+  +Y, -Y, +Z, -Z. Blue means clear depth; magenta means the selected row is absent.
+- Atlas row / Single light: preview or shadow only the selected atlas light.
+  Other lights remain lit. Rows follow nearest-light selection, not persistent IDs.
+- Status: program/catalog health, selected/captured lights, accepted mesh proxies,
+  submitted draws and missing-character/shader states.
 
-Quality **March lights** is how many of the brightest tile lights get a contact ray. The shader still evaluates up to 128 tile lights for the vis mask. Tile lists are unsorted; `maxTileLights` is the global stride, not a per-tile cap.
+## Build and validation
 
-March step count is also scaled by Anomaly `AnomalySafetyScale` (camera translation / look). Do not globally floor that scale.
+Build both Anomaly and this pack together. `dotnet build` deploys the appropriate
+runtime and shader files to local Pulsar; source-loader installations use the
+workspace trees directly. The latest observed game uses Pulsar Interim and the
+Anomaly include root in this workspace.
 
-## Build / deploy
-
-`dotnet build` copies `plugin.dll`, `plugin.xml`, and `Pack/` into Pulsar `Local/Shadows`. Enable Anomaly first, then Screen Space Shadows.
-
-## Out of scope
-
-Spot and sun shadows (already in vanilla). Overlay of `Lighting/LightPoint.hlsl`. Pack-side Harmony or a publicizer. Full mesh light-view raster (Anomaly draws actor AABBs, not Keen meshes). A full Hi-Z mip chain (Anomaly `hiZ` is a single half-res min of `linearDepth`).
+See [Light Test validation](Docs/ShadowValidation.md). Automated checks cover
+C# compilation, FXC, atlas projection and contact traversal on D3D11 WARP. They do
+not establish visual quality or frame cost in the game.

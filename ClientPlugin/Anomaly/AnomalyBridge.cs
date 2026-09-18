@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using ClientPlugin.Shadows;
 using VRage.Utils;
+using VRageMath;
 
 namespace ClientPlugin.Anomaly;
 
@@ -20,6 +21,7 @@ internal static class AnomalyBridge
     const string FullscreenType = "ClientPlugin.Shaders.FullscreenPassRegistry";
     const string OwnedPassType = "ClientPlugin.Shaders.OwnedPassRegistry";
     const string CatalogType = "ClientPlugin.Buffers.BufferCatalog";
+    const string LocalCharacterType = "ClientPlugin.Shaders.LocalCharacter";
 
     static readonly object Gate = new();
     static bool registered;
@@ -28,7 +30,10 @@ internal static class AnomalyBridge
     static MethodInfo tryGetProgramStatus;
     static MethodInfo catalogActive;
     static MethodInfo requestPointShadows;
+    static PropertyInfo pointShadowStatus;
+    static MethodInfo requestWorldBoxes;
     static MethodInfo requestOccupancy;
+    static MethodInfo tryGetCamRelBox;
     static string packRoot;
 
     public static bool RegistryFound
@@ -60,12 +65,14 @@ internal static class AnomalyBridge
             Type fullscreen = null;
             Type owned = null;
             Type catalog = null;
+            Type localCharacter = null;
             foreach (var assembly in SafeAssemblies())
             {
                 packType ??= assembly.GetType(PackRegistryType, false, false);
                 fullscreen ??= assembly.GetType(FullscreenType, false, false);
                 owned ??= assembly.GetType(OwnedPassType, false, false);
                 catalog ??= assembly.GetType(CatalogType, false, false);
+                localCharacter ??= assembly.GetType(LocalCharacterType, false, false);
             }
 
             if (packType == null)
@@ -86,8 +93,11 @@ internal static class AnomalyBridge
                 new[] { typeof(string), typeof(string).MakeByRefType() },
                 null);
             catalogActive = catalog?.GetMethod("Active", BindingFlags.Public | BindingFlags.Static);
+            pointShadowStatus = catalog?.GetProperty("PointShadowStatus", BindingFlags.Public | BindingFlags.Static);
             requestPointShadows = catalog?.GetMethod("RequestPointShadows", BindingFlags.Public | BindingFlags.Static);
+            requestWorldBoxes = catalog?.GetMethod("RequestWorldBoxes", BindingFlags.Public | BindingFlags.Static);
             requestOccupancy = catalog?.GetMethod("RequestOccupancy", BindingFlags.Public | BindingFlags.Static);
+            tryGetCamRelBox = localCharacter?.GetMethod("TryGetCamRelBox", BindingFlags.Public | BindingFlags.Static);
 
             var register = FindOwnedRegister(owned);
             register?.Invoke(null, new object[]
@@ -126,6 +136,11 @@ internal static class AnomalyBridge
         {
             return false;
         }
+    }
+
+    public static bool ProgramStatusAvailable
+    {
+        get { lock (Gate) return tryGetProgramStatus != null; }
     }
 
     public static bool TryGetProgramStatus(string programId, out string status)
@@ -167,6 +182,15 @@ internal static class AnomalyBridge
         }
     }
 
+    public static string PointShadowStatus
+    {
+        get
+        {
+            try { return pointShadowStatus?.GetValue(null) as string ?? "unavailable (update Anomaly)"; }
+            catch { return "unavailable"; }
+        }
+    }
+
     public static void RequestPointShadows(int maxLights, int faceResolution)
     {
         MethodInfo method;
@@ -182,6 +206,21 @@ internal static class AnomalyBridge
         }
     }
 
+    public static void RequestWorldBoxes(bool enabled)
+    {
+        MethodInfo method;
+        lock (Gate)
+            method = requestWorldBoxes;
+        try
+        {
+            method?.Invoke(null, new object[] { enabled });
+        }
+        catch (Exception e)
+        {
+            MyLog.Default.Error($"{Plugin.Name}: RequestWorldBoxes failed: {e.Message}");
+        }
+    }
+
     public static void RequestOccupancy(bool enabled)
     {
         MethodInfo method;
@@ -194,6 +233,31 @@ internal static class AnomalyBridge
         catch (Exception e)
         {
             MyLog.Default.Error($"{Plugin.Name}: RequestOccupancy failed: {e.Message}");
+        }
+    }
+
+    public static bool TryGetCamRelBox(out Vector3 center, out Vector3 half)
+    {
+        center = Vector3.Zero;
+        half = Vector3.Zero;
+        MethodInfo method;
+        lock (Gate)
+            method = tryGetCamRelBox;
+        if (method == null)
+            return false;
+        try
+        {
+            var args = new object[] { Vector3.Zero, Vector3.Zero };
+            if (!(method.Invoke(null, args) is true))
+                return false;
+            center = (Vector3)args[0];
+            half = (Vector3)args[1];
+            return true;
+        }
+        catch (Exception e)
+        {
+            MyLog.Default.Warning($"{Plugin.Name}: TryGetCamRelBox failed: {e.Message}");
+            return false;
         }
     }
 

@@ -1,4 +1,7 @@
+#define ANOMALY_PACK_SRV0_TYPE Texture2D<float>
 #include <AnomalyFullscreen.hlsli>
+#include <AnomalyPointShadows.hlsli>
+#include <AnomalyContactShadows.hlsli>
 #include <Lighting/Brdf.hlsli>
 #include <VertexTransformations.hlsli>
 
@@ -8,27 +11,32 @@
 #define StepCount     AnomalyPassUniform0.w
 #define MaxLights     AnomalyPassUniform1.x
 #define DebugOverlay  AnomalyPassUniform1.y
-#define UseTemporal   AnomalyPassUniform1.z
 #define UseOccupancy  AnomalyPassUniform1.w
-#define UseCubes      AnomalyPassUniform2.x
+#define UseAtlas      AnomalyPassUniform2.x
+#define ShadowSource  AnomalyPassUniform2.y
+#define DebugView     AnomalyPassUniform2.z
+#define DebugAtlasRow AnomalyPassUniform2.w
+#define SingleLight   AnomalyPassUniform3.x
 
-#define AnomalyHistoryDepth      AnomalyPackSrv0
+#define AnomalyPlayerDepth       AnomalyPackSrv0
 #define AnomalyOccupancy         AnomalyPackSrv1
 #define AnomalyPointShadowAtlas  AnomalyPackSrv2
 
-#define MAX_STEPS 24
+#define MAX_STEPS 192
 // PrepareLights fills tiles in race order. frame_.Light.maxTileLights is the
 // global list stride (256–4096), not a per-tile cap. Eval BRDF for many;
-// march only the brightest (quality MaxLights).
-#define MAX_EVAL 128
-#define MAX_MARCH 24
+// march the brightest MaxLights by photometric energy.
+#define MAX_EVAL 64
+#define MAX_MARCH 12
 #define MAX_OCC_STEPS 16
 #define MAX_CUBE_LIGHTS 64
 #define TILE_SIZE 16
 #define OCC_DIM 64
 #define OCC_VOXEL 2.0
 #define OCC_ORIGIN float3(-64.0, -64.0, -64.0)
-
+// Photometric range still lights. Marches may continue ~1.4× so vis is
+// not a hard sphere. IsolatedSub energy is photometric only (no tail).
+#define SHADOW_RANGE_SCALE 1.4
 float2 GetAttenuation(float distance, float range, float fallOff)
 {
     float d = distance / range;
@@ -40,15 +48,15 @@ float2 GetAttenuation(float distance, float range, float fallOff)
 }
 
 // Clone of LightPoint.hlsl: no NdotL cull. MaterialRadiance saturates ln.
-float3 PointUnshadowed(AnomalyPointLight light, float3 viewPos, float3 N, float3 V,
-    float3 albedo, float3 f0, float gloss, float ao)
+float3 PointUnshadowedRange(AnomalyPointLight light, float3 viewPos, float3 N, float3 V,
+    float3 albedo, float3 f0, float gloss, float ao, float range)
 {
     float3 toLight = light.positionView - viewPos;
     float distance = length(toLight);
-    if (distance >= light.range || distance < 1e-4)
+    if (distance >= range || distance < 1e-4)
         return 0;
     float3 L = toLight / distance;
-    float2 attenuation = GetAttenuation(distance, light.range, light.fallOff);
+    float2 attenuation = GetAttenuation(distance, range, light.fallOff);
     float3 lightFactor = attenuation.x * light.color * ao;
     if (dot(lightFactor, lightFactor) <= 1e-7)
         return 0;
@@ -57,11 +65,22 @@ float3 PointUnshadowed(AnomalyPointLight light, float3 viewPos, float3 N, float3
         N, L, V, H, light.diffuseFactor * attenuation.y);
 }
 
-bool PointLightDir(AnomalyPointLight light, float3 viewPos, out float3 L, out float distance)
+float3 PointUnshadowed(AnomalyPointLight light, float3 viewPos, float3 N, float3 V,
+    float3 albedo, float3 f0, float gloss, float ao)
+{
+    return PointUnshadowedRange(light, viewPos, N, V, albedo, f0, gloss, ao, light.range);
+}
+
+float ShadowRange(AnomalyPointLight light, float maxDist)
+{
+    return max(light.range * SHADOW_RANGE_SCALE, maxDist);
+}
+
+bool PointLightDir(AnomalyPointLight light, float3 viewPos, float shadowRange, out float3 L, out float distance)
 {
     float3 toLight = light.positionView - viewPos;
     distance = length(toLight);
-    if (distance >= light.range || distance < 1e-4)
+    if (distance >= shadowRange || distance < 1e-4)
     {
         L = 0;
         return false;
@@ -72,32 +91,15 @@ bool PointLightDir(AnomalyPointLight light, float3 viewPos, out float3 L, out fl
 
 float2 ViewToUv(float3 viewPos)
 {
-    float z = max(-viewPos.z, 1e-4);
-    float3 ray = viewPos / z;
-    float ray_x = rcp(max(frame_.Environment.projection_matrix._11, 1e-6));
-    float ray_y = rcp(max(frame_.Environment.projection_matrix._22, 1e-6));
-    float2 projOffset = float2(
-        frame_.Environment.projection_matrix._31 * ray_x,
-        frame_.Environment.projection_matrix._32 * ray_y);
-    return float2(
-        ((ray.x - projOffset.x) / ray_x + 1) * 0.5,
-        (1 - (ray.y - projOffset.y) / ray_y) * 0.5);
+    // GAP: Slice AI — unjittered view + jitter-matched depth sample.
+    // AnomalyViewToLightingUv of a jittered reconstruct crawls with Halton.
+    return AnomalyViewToDepthUv(viewPos);
 }
 
 // InvViewAt0 rows (same expansion as Aurora / clouds). mul(M, v) transposes.
 float3 ViewToWorldAt0(float3 viewPos)
 {
-    return AnomalyCameraToWorld[0].xyz * viewPos.x
-         + AnomalyCameraToWorld[1].xyz * viewPos.y
-         + AnomalyCameraToWorld[2].xyz * viewPos.z;
-}
-
-float2 WorldToPrevUv(float3 worldAt0)
-{
-    float4 clip = mul(float4(worldAt0, 1), AnomalyPrevViewProj);
-    float w = max(abs(clip.w), 1e-4);
-    float2 ndc = clip.xy / w;
-    return float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    return mul(viewPos, (float3x3)frame_.Environment.inv_view_matrix);
 }
 
 float OccupancyAt(float3 worldAt0)
@@ -109,81 +111,6 @@ float OccupancyAt(float3 worldAt0)
     uint2 tile = uint2(cell.z % 8, cell.z / 8);
     uint2 px = tile * OCC_DIM + cell.xy;
     return AnomalyOccupancy.Load(int3(px, 0)).r;
-}
-
-float MarchContact(float3 viewPos, float3 viewNormal, float3 lightDir, float marchDist,
-    float thickness, uint steps)
-{
-    float vis = 1.0;
-    float receiverZ = -viewPos.z;
-    float invSteps = rcp((float)steps);
-    float stepLen = marchDist * invSteps;
-    // Offset off the receiver so the first samples are not the same surface.
-    float3 origin = viewPos + viewNormal * 0.04 + lightDir * 0.08;
-    float bias = 0.03;
-    float occluderCloser = 0.08;
-    [loop]
-    for (uint s = 1; s <= MAX_STEPS; s++)
-    {
-        if (s > steps)
-            break;
-        float t = (float)s * stepLen;
-        float3 samplePos = origin + lightDir * t;
-        float2 sampleUv = AnomalyScreenUvToTexel(ViewToUv(samplePos));
-        if (any(sampleUv < 0) || any(sampleUv > 1))
-            break;
-
-        float sceneZ = AnomalyLinearDepth.SampleLevel(AnomalyPointSampler, sampleUv, 0);
-        float rayZ = -samplePos.z;
-        float delta = rayZ - sceneZ;
-        // Hit only if the ray is behind a closer occluder (character), not the
-        // receiver itself (floor). Thickness is occluder depth along the ray.
-        if (delta > bias && delta < thickness && sceneZ < receiverZ - occluderCloser)
-        {
-            vis = 0;
-            break;
-        }
-    }
-
-    return vis;
-}
-
-float MarchHistory(float3 viewPos, float3 viewNormal, float3 lightDir, float marchDist,
-    float thickness, uint steps)
-{
-    float vis = 1.0;
-    float3 worldReceiver = ViewToWorldAt0(viewPos);
-    float4 recvClip = mul(float4(worldReceiver, 1), AnomalyPrevViewProj);
-    float recvPrevZ = max(abs(recvClip.w), 1e-4);
-    float invSteps = rcp((float)steps);
-    float stepLen = marchDist * invSteps;
-    float3 origin = viewPos + viewNormal * 0.04 + lightDir * 0.08;
-    float bias = 0.03;
-    float occluderCloser = 0.08;
-    [loop]
-    for (uint s = 1; s <= MAX_STEPS; s++)
-    {
-        if (s > steps)
-            break;
-        float t = (float)s * stepLen;
-        float3 samplePos = origin + lightDir * t;
-        float3 world = ViewToWorldAt0(samplePos);
-        float2 prevUv = WorldToPrevUv(world);
-        if (any(prevUv < 0) || any(prevUv > 1))
-            break;
-
-        float histZ = AnomalyHistoryDepth.SampleLevel(AnomalyPointSampler, prevUv, 0).r;
-        float4 prevClip = mul(float4(world, 1), AnomalyPrevViewProj);
-        float prevRayZ = max(abs(prevClip.w), 1e-4);
-        float delta = prevRayZ - histZ;
-        if (delta > bias && delta < thickness && histZ < recvPrevZ - occluderCloser)
-        {
-            vis = 0;
-            break;
-        }
-    }
-
-    return vis;
 }
 
 float MarchOccupancy(float3 viewPos, float3 lightDir, float marchDist)
@@ -220,47 +147,14 @@ uint2 AtlasSize()
     return uint2(w, h);
 }
 
-void CubeFaceUv(float3 dir, out uint face, out float2 uv)
-{
-    float3 a = abs(dir);
-    if (a.x >= a.y && a.x >= a.z)
-    {
-        face = dir.x >= 0 ? 0 : 1;
-        uv = dir.x >= 0 ? float2(-dir.z, -dir.y) : float2(dir.z, -dir.y);
-        uv = uv / max(a.x, 1e-6) * 0.5 + 0.5;
-    }
-    else if (a.y >= a.z)
-    {
-        face = dir.y >= 0 ? 2 : 3;
-        uv = dir.y >= 0 ? float2(dir.x, dir.z) : float2(dir.x, -dir.z);
-        uv = uv / max(a.y, 1e-6) * 0.5 + 0.5;
-    }
-    else
-    {
-        face = dir.z >= 0 ? 4 : 5;
-        uv = dir.z >= 0 ? float2(dir.x, -dir.y) : float2(-dir.x, -dir.y);
-        uv = uv / max(a.z, 1e-6) * 0.5 + 0.5;
-    }
-}
-
 float SampleCubeRow(uint row, float3 dir, float dist)
 {
-    uint2 atlasSize = AtlasSize();
-    if (atlasSize.x < 6 || atlasSize.y < 2)
-        return 1;
-    uint faceRes = atlasSize.x / 6;
-    uint face;
-    float2 uv;
-    CubeFaceUv(dir, face, uv);
-    float2 px = float2((face + uv.x) * faceRes, 1 + row * faceRes + uv.y * faceRes);
-    float map = AnomalyPointShadowAtlas.SampleLevel(AnomalyPointSampler, (px + 0.5) / atlasSize, 0).r;
-    if (map >= 1e4)
-        return 1;
-    return map + 0.08 < dist ? 0.0 : 1.0;
+    return AnomalyPointShadowVisibility(AnomalyPointShadowAtlas, row, dir, dist, 0.04);
 }
 
-float CubeVisibility(float3 viewPos, float3 lightViewPos, float range)
+float CubeVisibility(float3 viewPos, float3 lightViewPos, float range, out bool capturedCharacter)
 {
+    capturedCharacter = false;
     uint2 atlasSize = AtlasSize();
     if (atlasSize.y < 2)
         return 1;
@@ -270,7 +164,8 @@ float CubeVisibility(float3 viewPos, float3 lightViewPos, float range)
     float dist = length(toPoint);
     if (dist < 1e-4 || dist > range)
         return 1;
-    float3 dir = toPoint / dist;
+    // Atlas faces are anchored to world axes, independent of camera rotation.
+    float3 dir = ViewToWorldAt0(toPoint / dist);
     [loop]
     for (uint i = 0; i < MAX_CUBE_LIGHTS; i++)
     {
@@ -279,11 +174,43 @@ float CubeVisibility(float3 viewPos, float3 lightViewPos, float range)
         float4 slot = AnomalyPointShadowAtlas.Load(int3(i, 0, 0));
         if (slot.w < 0.05)
             continue;
-        if (distance(slot.xyz, lightViewPos) < 0.2)
+        if (distance(slot.xyz, lightViewPos) < 0.001 && abs(slot.w - range) < 0.001)
+        {
+            capturedCharacter = atlasSize.x >= 66 && AnomalyPointShadowAtlas.Load(int3(65, 0, 0)).w == 1;
             return SampleCubeRow(i, dir, dist);
+        }
     }
 
     return 1;
+}
+
+void InsertTop(inout float topLuma[MAX_MARCH], inout uint topEval[MAX_MARCH],
+    uint marchCap, float score, uint evalI)
+{
+    if (score <= 1e-6)
+        return;
+    uint at = marchCap;
+    [loop]
+    for (uint k = 0; k < MAX_MARCH; k++)
+    {
+        if (k >= marchCap)
+            break;
+        if (score > topLuma[k])
+        {
+            at = k;
+            break;
+        }
+    }
+    if (at >= marchCap)
+        return;
+    [loop]
+    for (int s = (int)marchCap - 2; s >= (int)at; s--)
+    {
+        topLuma[s + 1] = topLuma[s];
+        topEval[s + 1] = topEval[s];
+    }
+    topLuma[at] = score;
+    topEval[at] = evalI;
 }
 
 float4 DebugColor(float linearDepth, uint numLights, float3 removed, float3 unshadowed, float minVis)
@@ -296,17 +223,43 @@ float4 DebugColor(float linearDepth, uint numLights, float3 removed, float3 unsh
         return float4(0.12, 0.22, 0.82, 1);
 
     float energy = dot(unshadowed, 1.0 / 3.0);
+    float removedLuma = dot(removed, 1.0 / 3.0);
     // Yellow: occluded but almost nothing to IsolatedSub (self-hit / tiny energy).
-    if (minVis < 0.5 && energy < 0.02)
+    if (minVis < 0.5 && energy < 0.02 && removedLuma < 0.01)
         return float4(0.95, 0.82, 0.10, 1);
     float3 lit = float3(0.08, 0.78, 0.22) * saturate(energy * 2.0 + 0.15);
-    float3 shadow = float3(1.0, 0.12, 0.04) * saturate(dot(removed, 1.0 / 3.0) * 4.0 + (1 - minVis));
-    return float4(lerp(lit, shadow, saturate(1 - minVis)), 1);
+    float3 shadow = float3(1.0, 0.12, 0.04) * saturate(removedLuma * 4.0 + 0.15);
+    return float4(lerp(lit, shadow, saturate(removedLuma * 3.0)), 1);
 }
 
 float4 __pixel_shader(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
 {
     // GAP: LightPoint uses screen_to_uv(SV_Position), not interpolator UV.
+    if (DebugOverlay > 0.5 && DebugView > 1.5)
+    {
+        uint2 p = uint2(pos.xy);
+        float z = AnomalyLinearDepth[p];
+        bool player = z > 0 && AnomalyContactPlayerPixel(AnomalyPlayerDepth, p,
+            AnomalyLightingViewPos(pos.xy, z));
+        return player ? float4(1, 0.05, 0.05, 1) : float4(0.04, 0.12, 0.04, 1);
+    }
+    if (DebugOverlay > 0.5 && DebugView > 0.5)
+    {
+        uint2 size = AtlasSize();
+        uint faceSize = size.x / 6;
+        uint row = (uint)max(DebugAtlasRow, 0);
+        if (faceSize == 0 || size.y <= 1 || row >= (size.y - 1) / max(faceSize, 1))
+            return float4(0.8, 0.1, 0.8, 1);
+        float4 header = AnomalyPointShadowAtlas.Load(int3(row, 0, 0));
+        if (header.w < 0.05)
+            return float4(0.8, 0.1, 0.8, 1);
+        // Six panels: +X, -X, +Y, -Y, +Z, -Z, left to right.
+        uint2 p = min(uint2(saturate(uv) * float2(size.x, faceSize)), uint2(size.x - 1, faceSize - 1));
+        p.y += 1 + row * faceSize;
+        float depth = AnomalyPointShadowAtlas.Load(int3(p, 0)).r;
+        return depth > 1e4 ? float4(0.03, 0.08, 0.16, 1)
+            : float4((1 - saturate(depth / header.w)).xxx, 1);
+    }
     uint2 pixel = (uint2)pos.xy;
     float linearDepth = AnomalyLinearDepth[pixel];
     uint2 tileCoord = pixel;
@@ -330,74 +283,117 @@ float4 __pixel_shader(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Targ
     float4 g2 = AnomalyGBuffer2[pixel];
     float3 nView = normalize(unpack_normals2(g1.xy));
     float3 N = AnomalyLightingN(nView);
-    float3 viewPos = AnomalyLightingViewPos(pixel, linearDepth);
-    float3 V = -normalize(compute_screen_ray(AnomalyLightingUv(pixel)));
+    float3 viewPos = AnomalyLightingViewPos(pos.xy, linearDepth);
+    float3 viewPosMarch = AnomalyLightingViewPosUnjittered(pos.xy, linearDepth);
+    float3 geometricNormal = cross(ddx(viewPosMarch), ddy(viewPosMarch));
+    float normalLength = dot(geometricNormal, geometricNormal);
+    geometricNormal = normalLength > 1e-10 ? geometricNormal * rsqrt(normalLength) : nView;
+    geometricNormal *= dot(geometricNormal, nView) < 0 ? -1 : 1;
+    float3 V = -normalize(compute_screen_ray(AnomalyLightingUv(pos.xy)));
     float3 albedo = SurfaceAlbedo(g0.rgb, g2.r);
     float3 f0 = SurfaceF0(g0.rgb, g2.r);
     float gloss = g2.g;
     float ao = saturate(1 - (1 - max(g1.b, 0.01)) * frame_.Light.aoPointLight);
 
-    uint steps = (uint)clamp(StepCount * AnomalySafetyScale, 1, MAX_STEPS);
-    float thickness = max(Thickness, 0.5);
+    uint steps = (uint)clamp(StepCount, 12, MAX_STEPS);
+    float thickness = clamp(Thickness, 0.2, 1.2);
     float maxDist = max(MaxDistance, 0.01);
 
-    float maxLuma = 0;
+    float topLuma[MAX_MARCH];
+    uint topEval[MAX_MARCH];
+    [loop]
+    for (uint k = 0; k < MAX_MARCH; k++)
+    {
+        topLuma[k] = -1.0;
+        topEval[k] = 0;
+    }
+
+    float3 removed = 0;
+    float minVis = 1;
+    float atlasOnly = 0;
+    float3 unshadowedTotal = 0;
     [loop]
     for (uint findI = 0; findI < MAX_EVAL; findI++)
     {
         if (findI >= evalCount)
             break;
         uint findIndex = AnomalyTileIndices[frame_.Light.tiles_num + mad(frame_.Light.maxTileLights, tileIndex, findI)];
-        float3 findU = PointUnshadowed(AnomalyPointLights[findIndex], viewPos, N, V, albedo, f0, gloss, ao);
-        maxLuma = max(maxLuma, dot(findU, 1.0 / 3.0));
+        AnomalyPointLight findLight = AnomalyPointLights[findIndex];
+        if (SingleLight > 0.5)
+        {
+            uint2 atlasSize = AtlasSize();
+            uint row = (uint)max(DebugAtlasRow, 0);
+            if (atlasSize.x < 6 || atlasSize.y <= 1 || row >= (atlasSize.y - 1) / max(atlasSize.x / 6, 1))
+                continue;
+            float4 selected = AnomalyPointShadowAtlas.Load(int3(row, 0, 0));
+            if (selected.w < 0.05 || distance(selected.xyz, findLight.positionView) > 0.001 || abs(selected.w - findLight.range) > 0.001)
+                continue;
+        }
+        float3 findE = PointUnshadowed(findLight, viewPos, N, V, albedo, f0, gloss, ao);
+        unshadowedTotal += findE;
+        if (UseAtlas > 0.5 && (ShadowSource < 0.5 || ShadowSource > 1.5))
+        {
+            bool capturedCharacter;
+            float atlasVis = CubeVisibility(viewPosMarch, findLight.positionView, findLight.range, capturedCharacter);
+            removed += findE * (1 - atlasVis);
+            minVis = min(minVis, atlasVis);
+        }
+        float findRange = ShadowRange(findLight, maxDist);
+        float3 dummyL;
+        float dummyDist;
+        if (!PointLightDir(findLight, viewPosMarch, findRange, dummyL, dummyDist))
+            continue;
+        InsertTop(topLuma, topEval, marchCap, dot(findE, 1.0 / 3.0), findI);
     }
-    float lumaFloor = max(maxLuma * 0.2, 0.02);
 
-    float3 removed = 0;
-    float3 unshadowedTotal = 0;
-    float minVis = 1;
-    uint marches = 0;
     [loop]
-    for (uint i = 0; i < MAX_EVAL; i++)
+    for (uint m = 0; m < MAX_MARCH; m++)
     {
-        if (i >= evalCount)
+        if (ShadowSource > 1.5 || m >= marchCap)
+            break;
+        if (topLuma[m] < 0)
             break;
 
+        uint i = topEval[m];
         uint index = AnomalyTileIndices[frame_.Light.tiles_num + mad(frame_.Light.maxTileLights, tileIndex, i)];
         AnomalyPointLight light = AnomalyPointLights[index];
-        float3 unshadowed = PointUnshadowed(light, viewPos, N, V, albedo, f0, gloss, ao);
-        unshadowedTotal += unshadowed;
-
-        float luma = dot(unshadowed, 1.0 / 3.0);
-        if (luma < lumaFloor)
-            continue;
-        if (marches >= marchCap)
-            continue;
-
+        float shadowRange = ShadowRange(light, maxDist);
         float3 L;
         float distance;
-        if (!PointLightDir(light, viewPos, L, distance))
+        if (!PointLightDir(light, viewPosMarch, shadowRange, L, distance))
             continue;
 
-        marches++;
+        float3 energy = PointUnshadowed(light, viewPos, N, V, albedo, f0, gloss, ao);
         float marchDist = min(distance, maxDist);
-        float vis = MarchContact(viewPos, nView, L, marchDist, thickness, steps);
-        if (UseTemporal > 0.5 && AnomalyLightingHistoryValid)
-            vis = min(vis, MarchHistory(viewPos, nView, L, marchDist, thickness, steps));
-        if (UseOccupancy > 0.5)
-            vis = min(vis, MarchOccupancy(viewPos, L, marchDist));
-        if (UseCubes > 0.5)
-            vis = min(vis, CubeVisibility(viewPos, light.positionView, light.range));
+        float atlasVis = 1;
+        bool capturedCharacter = false;
+        if (UseAtlas > 0.5 && ShadowSource < 0.5)
+            atlasVis = CubeVisibility(viewPosMarch, light.positionView, light.range, capturedCharacter);
+        float vis = AnomalyContactVisibilityExcludingPlayer(AnomalyLinearDepth,
+            AnomalyPlayerDepth, viewPosMarch, geometricNormal, L, marchDist, thickness, steps);
+        float contact = vis;
+        vis = min(vis, atlasVis);
+        if (vis < 0.45 && contact > 0.75)
+            atlasOnly = 1;
+        // Previous-frame depth is not a second occluder: it ghosts moving poses.
+        if (ShadowSource < 0.5 && UseOccupancy > 0.5)
+            vis = min(vis, MarchOccupancy(viewPosMarch, L, marchDist));
         minVis = min(minVis, vis);
-        removed += unshadowed * (1 - vis);
+        // Atlas contribution was already accumulated for every evaluated light.
+        removed += energy * max(atlasVis - vis, 0);
     }
 
     if (DebugOverlay > 0.5)
+    {
+        // Magenta: atlas occludes, contact missed (FP body / AABB).
+        if (atlasOnly > 0.5)
+            return float4(0.95, 0.08, 0.85, 1);
         return DebugColor(linearDepth, numLights, removed, unshadowedTotal, minVis);
+    }
 
-    // IsolatedSub src is a 0–1 dest fraction. Anomaly merges dest*(1-src)
-    // from the AfterLighting dest copy (blit before pack PS). Debug Replace
-    // is vis false-color and does not sample t0.
-    float occ = saturate(1.0 - minVis) * saturate(Intensity);
-    return AnomalyIsolatedSub(occ);
+    // IsolatedSub src is photometric point-light energy / dest. A longer-range
+    // BRDF tail at the falloff dest-punched (duplicate/stepped silhouettes
+    // that do not appear in the bright center).
+    float3 destRgb = AnomalySceneColor[pixel].rgb;
+    return AnomalyIsolatedSubEnergy(removed * saturate(Intensity), destRgb, unshadowedTotal);
 }

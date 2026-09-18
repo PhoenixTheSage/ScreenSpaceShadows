@@ -20,6 +20,9 @@ internal static class ShadowRenderer
             var empty = new float[16];
             AnomalyBridge.SetUniforms(AnomalyBridge.PassId, empty);
             AnomalyBridge.SetUniforms(AnomalyBridge.DebugPassId, empty);
+            AnomalyBridge.RequestPointShadows(0, 128);
+            AnomalyBridge.RequestWorldBoxes(false);
+            AnomalyBridge.RequestOccupancy(false);
             return;
         }
 
@@ -27,18 +30,21 @@ internal static class ShadowRenderer
         AnomalyBridge.SetUniforms(AnomalyBridge.PassId, packed);
         AnomalyBridge.SetUniforms(AnomalyBridge.DebugPassId, packed);
 
-        var cubeCap = config.UseLightViews ? config.CubeLightCap : 0;
-        if (cubeCap < 0)
-            cubeCap = 0;
+        var cubeCap = config.CubeLightCap;
+        if (cubeCap < 4)
+            cubeCap = 4;
         if (cubeCap > 64)
             cubeCap = 64;
-        AnomalyBridge.RequestPointShadows(cubeCap, 64);
+        var face = config.Quality == ShadowQuality.Ultra ? 1024 :
+            config.Quality == ShadowQuality.High ? 512 : 256;
+        AnomalyBridge.RequestPointShadows(cubeCap, face);
+        AnomalyBridge.RequestWorldBoxes(config.UseLightViews && config.CubeLightCap > 0);
         AnomalyBridge.RequestOccupancy(config.UseOccupancy);
     }
 
     static float[] PackConstants(Config config, bool debug)
     {
-        // MaxLights is the contact-march cap. The shader evaluates up to 128 tile lights.
+        // MaxLights is the contact-march cap. The shader evaluates up to 64 tile lights.
         QualityPreset(config.Quality, out var steps, out var maxLights, out var presetDistance);
         var maxDistance = config.MaxDistance > 0.01f ? config.MaxDistance : presetDistance;
         return new[]
@@ -49,9 +55,13 @@ internal static class ShadowRenderer
             steps,
             maxLights,
             debug ? 1f : 0f,
-            config.UseTemporal ? 1f : 0f,
+            0f, // Legacy depth-history occluders caused repeated animated silhouettes.
             config.UseOccupancy ? 1f : 0f,
-            config.UseLightViews && config.CubeLightCap > 0 ? 1f : 0f,
+            1f,
+            (float)config.Source,
+            (float)config.DebugView,
+            (float)System.Math.Min(System.Math.Max(config.DebugAtlasRow, 0), 63),
+            config.SingleLight ? 1f : 0f,
         };
     }
 
@@ -60,24 +70,24 @@ internal static class ShadowRenderer
         switch (quality)
         {
             case ShadowQuality.Low:
-                steps = 8f;
-                maxLights = 8f;
-                distance = 3f;
+                steps = 48f;
+                maxLights = 4f;
+                distance = 0.5f;
                 break;
             case ShadowQuality.High:
-                steps = 24f;
-                maxLights = 16f;
-                distance = 8f;
+                steps = 128f;
+                maxLights = 8f;
+                distance = 1.5f;
                 break;
             case ShadowQuality.Ultra:
-                steps = 24f;
-                maxLights = 24f;
-                distance = 12f;
+                steps = 192f;
+                maxLights = 10f;
+                distance = 2f;
                 break;
             default:
-                steps = 16f;
-                maxLights = 16f;
-                distance = 6f;
+                steps = 96f;
+                maxLights = 6f;
+                distance = 1f;
                 break;
         }
     }

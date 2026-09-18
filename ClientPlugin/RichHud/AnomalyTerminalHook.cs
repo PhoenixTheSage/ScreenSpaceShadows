@@ -89,23 +89,35 @@ internal static class AnomalyTerminalHook
             (Func<object>)(() => Config.Current.Quality),
             (Action<object>)(v => Set(() => Config.Current.Quality = (ShadowQuality)v)),
             "March steps, lights per pixel, and default ray distance");
-        Invoke(t, page, "Slider", "Thickness", 0.02f, 0.8f,
+        Invoke(t, page, "Slider", "Thickness", 0.2f, 1.2f,
             (Func<float>)(() => Config.Current.Thickness),
             (Action<float>)(v => Set(() => Config.Current.Thickness = v)),
-            "Occluder thickness in meters; larger hides more leaks and more false hits", 0.01f);
+            "View-depth hit tolerance in meters; larger accepts more blockers and more false hits, not a penumbra control", 0.05f);
         Invoke(t, page, "Slider", "Max distance", 0f, 16f,
             (Func<float>)(() => Config.Current.MaxDistance),
             (Action<float>)(v => Set(() => Config.Current.MaxDistance = v)),
-            "Ray length in meters. 0 uses the quality preset (Low 2 / Medium 4 / High 8 / Ultra 12)", 0.25f);
+            "Ray length in meters. 0 uses the quality preset (Low 0.5 / Medium 1 / High 1.5 / Ultra 2)", 0.25f);
         Invoke(t, page, "Checkbox", "Debug overlay",
             (Func<bool>)(() => Config.Current.DebugOverlay),
             (Action<bool>)(v => Set(() => Config.Current.DebugOverlay = v)),
             "Show removed point-light energy as a red overlay instead of darkening LBuffer");
+        Invoke(t, page, "Dropdown", "Shadow source", typeof(ShadowSource),
+            (Func<object>)(() => Config.Current.Source),
+            (Action<object>)(v => Set(() => Config.Current.Source = (ShadowSource)v)),
+            "Combined: atlas player plus scene contact. ContactOnly: scene contact without player. AtlasOnly: mesh atlas.");
+        Invoke(t, page, "Dropdown", "Debug view", typeof(ShadowDebugView),
+            (Func<object>)(() => Config.Current.DebugView),
+            (Action<object>)(v => Set(() => Config.Current.DebugView = (ShadowDebugView)v)),
+            "Visibility, six atlas faces, or PlayerMask (red pixels excluded from contact). Requires Debug overlay.");
+        Invoke(t, page, "Slider", "Atlas row", 0f, 63f,
+            (Func<float>)(() => Config.Current.DebugAtlasRow),
+            (Action<float>)(v => Set(() => Config.Current.DebugAtlasRow = (int)v)),
+            "Light row for atlas preview and single-light isolation; nearest-light order.", 1f);
+        Invoke(t, page, "Checkbox", "Single light",
+            (Func<bool>)(() => Config.Current.SingleLight),
+            (Action<bool>)(v => Set(() => Config.Current.SingleLight = v)),
+            "Shadow only the selected atlas light. Other lights remain lit.");
         Invoke(t, page, "Category", "Around corners");
-        Invoke(t, page, "Checkbox", "Temporal depth",
-            (Func<bool>)(() => Config.Current.UseTemporal),
-            (Action<bool>)(v => Set(() => Config.Current.UseTemporal = v)),
-            "Reproject last-frame linear depth while marching");
         Invoke(t, page, "Checkbox", "Occupancy clipmap",
             (Func<bool>)(() => Config.Current.UseOccupancy),
             (Action<bool>)(v => Set(() => Config.Current.UseOccupancy = v)),
@@ -113,11 +125,11 @@ internal static class AnomalyTerminalHook
         Invoke(t, page, "Checkbox", "Light-view maps",
             (Func<bool>)(() => Config.Current.UseLightViews),
             (Action<bool>)(v => Set(() => Config.Current.UseLightViews = v)),
-            "AABB depth from selected point lights — shadows never-seen occluders");
+            "Optional AABB approximations. Character mesh maps are requested separately whenever enabled");
         Invoke(t, page, "Slider", "Light-view cap", 0f, 64f,
             (Func<float>)(() => Config.Current.CubeLightCap),
             (Action<float>)(v => Set(() => Config.Current.CubeLightCap = (int)v)),
-            "Closest point lights with a cube atlas. Default 4. Max 64.", 1f);
+            "Closest point lights with a cube atlas. Default 4. Values below 4 retain four mesh-map slots. Max 64.", 1f);
         Invoke(t, page, "Category", "Debug");
         Invoke(t, page, "Button", "Show Status",
             (Action)ShadowsStatus.Show,

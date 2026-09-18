@@ -14,6 +14,20 @@ public enum ShadowQuality
     Ultra,
 }
 
+public enum ShadowSource
+{
+    Combined,
+    ContactOnly,
+    AtlasOnly,
+}
+
+public enum ShadowDebugView
+{
+    Visibility,
+    AtlasFaces,
+    PlayerMask,
+}
+
 public class Config : INotifyPropertyChanged
 {
     #region Options
@@ -28,6 +42,10 @@ public class Config : INotifyPropertyChanged
     private bool useOccupancy;
     private bool useLightViews;
     private int cubeLightCap = 4;
+    private ShadowSource source;
+    private ShadowDebugView debugView;
+    private int debugAtlasRow;
+    private bool singleLight;
 
     #endregion
 
@@ -58,14 +76,14 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref quality, value);
     }
 
-    [Slider(0.15f, 2f, 0.05f, SliderAttribute.SliderType.Float, description: "Occluder thickness along the ray in meters. Character-scale needs ~0.5; the march uses at least 0.5")]
+    [Slider(0.2f, 1.2f, 0.05f, SliderAttribute.SliderType.Float, description: "View-depth hit tolerance in meters. Larger accepts more blockers and more false hits; this is not light-source softness.")]
     public float Thickness
     {
         get => thickness;
         set => SetField(ref thickness, value);
     }
 
-    [Slider(0f, 16f, 0.25f, SliderAttribute.SliderType.Float, label: "Max distance", description: "Ray length in meters. 0 uses the quality preset (Low 3 / Medium 6 / High 8 / Ultra 12)")]
+    [Slider(0f, 16f, 0.25f, SliderAttribute.SliderType.Float, label: "Max distance", description: "Ray length in meters. 0 uses the quality preset (Low 0.5 / Medium 1 / High 1.5 / Ultra 2). Short-range contact detail. Pixel budget can shorten this distance; point-light energy stays within the light radius")]
     public float MaxDistance
     {
         get => maxDistance;
@@ -79,9 +97,37 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref debugOverlay, value);
     }
 
+    [Dropdown(description: "Combined: atlas player shadows plus scene contact shadows. ContactOnly: scene contact without the player. AtlasOnly: mesh atlas.")]
+    public ShadowSource Source
+    {
+        get => source;
+        set => SetField(ref source, value);
+    }
+
+    [Dropdown(description: "Debug overlay: visibility or six raw atlas faces (+X, -X, +Y, -Y, +Z, -Z).")]
+    public ShadowDebugView DebugView
+    {
+        get => debugView;
+        set => SetField(ref debugView, value);
+    }
+
+    [Slider(0f, 63f, 1f, SliderAttribute.SliderType.Integer, label: "Atlas row", description: "Atlas light row for face preview and single-light isolation. Selection follows the nearest-light atlas order.")]
+    public int DebugAtlasRow
+    {
+        get => debugAtlasRow;
+        set => SetField(ref debugAtlasRow, value);
+    }
+
+    [Checkbox(description: "Shadow only the light in the selected atlas row. Other lights remain lit. Use a one-light scene for stable camera-rotation tests.")]
+    public bool SingleLight
+    {
+        get => singleLight;
+        set => SetField(ref singleLight, value);
+    }
+
     [Separator("Around corners")]
 
-    [Checkbox(description: "Reproject last-frame linear depth while marching (reduces flicker; still camera-fed)")]
+    // Legacy XML compatibility only; old depth is no longer a shadow caster.
     public bool UseTemporal
     {
         get => useTemporal;
@@ -95,14 +141,14 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref useOccupancy, value);
     }
 
-    [Checkbox(description: "Light-view AABB depth for selected point lights — the only layer that shadows never-seen occluders")]
+    [Checkbox(description: "Light-view AABB extras for selected point lights (local player AABB is never stamped). Mesh map of the local suit is always requested")]
     public bool UseLightViews
     {
         get => useLightViews;
         set => SetField(ref useLightViews, value);
     }
 
-    [Slider(0f, 64f, 1f, SliderAttribute.SliderType.Integer, label: "Light-view cap", description: "How many closest point lights get a cube atlas. Default 4 for wide hardware. 0 disables cubes. Max 64.")]
+    [Slider(0f, 64f, 1f, SliderAttribute.SliderType.Integer, label: "Light-view cap", description: "How many closest point lights get a cube atlas (mesh + optional AABB). Default 4. 0 still keeps the mesh cap at 4. Max 64.")]
     public int CubeLightCap
     {
         get => cubeLightCap;
