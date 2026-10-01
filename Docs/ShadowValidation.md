@@ -36,6 +36,9 @@ character skinning, render scheduling or visual quality in Space Engineers.
 4. Choose ContactOnly. The world blocker should now contribute where visible
    in screen depth. Record repetitions separately from the mesh-only result.
    Camera-dependent disappearances remain a known contact limitation.
+   Soft Contact off is the crisp first-hit. On should soften only the umbra
+   edge (not stripe or wash interior). Direction stays locked
+   (Quality Low/Medium 4 taps, High/Ultra 8).
 5. Choose Combined. Verify adding contact does not introduce a displaced body
    copy. Repeat with upscaler/jitter enabled and disabled, keeping the scene fixed.
 6. Add a second light only after this passes. Check atlas row changes and note

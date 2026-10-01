@@ -37,13 +37,14 @@ public static class ShadowsStatus
         sb.Append(" · intensity ").Append(cfg.Intensity.ToString("0.##", CultureInfo.InvariantCulture));
         sb.Append(" · debug ").AppendLine(cfg.DebugOverlay ? "on (Replace exclusive)" : "off");
         sb.Append("     thickness ").Append(cfg.Thickness.ToString("0.##", CultureInfo.InvariantCulture));
+        sb.Append(" · soft contact ").Append(Yes(cfg.SoftContact));
         sb.Append(" · maxDist ").Append(cfg.MaxDistance.ToString("0.##", CultureInfo.InvariantCulture));
         sb.Append(" · legacy temporal disabled");
         sb.Append(" · occupancy ").Append(Yes(cfg.UseOccupancy));
         sb.Append(" · cubes ").AppendLine(Yes(cfg.UseLightViews));
         sb.Append("     source ").Append(cfg.Source).Append(" · view ").Append(cfg.DebugView);
         sb.Append(" · atlas row ").Append(cfg.DebugAtlasRow).Append(" · single light ").AppendLine(Yes(cfg.SingleLight));
-        sb.AppendLine("     mesh atlas requested whenever enabled (cap >= 4); isolated modes bypass history/occupancy");
+        sb.AppendLine("     quality sets face/cap/atlas-soft (Low 64×1 … Ultra 256×4); Soft Contact is 1D edge (4/8 taps)");
     }
 
     static void AppendAnomaly(StringBuilder sb)

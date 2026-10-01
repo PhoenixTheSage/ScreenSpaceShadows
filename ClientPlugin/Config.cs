@@ -35,6 +35,7 @@ public class Config : INotifyPropertyChanged
     private bool enabled = true;
     private float intensity = 1f;
     private ShadowQuality quality = ShadowQuality.Medium;
+    private bool softContact;
     private float thickness = 0.5f;
     private float maxDistance;
     private bool debugOverlay;
@@ -69,14 +70,21 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref intensity, value);
     }
 
-    [Dropdown(description: "March steps, lights per pixel, and default ray distance")]
+    [Dropdown(description: "Atlas face size / light count, contact steps, and atlas/contact soft taps. Low is cheapest; Ultra keeps soft edges.")]
     public ShadowQuality Quality
     {
         get => quality;
         set => SetField(ref quality, value);
     }
 
-    [Slider(0.2f, 1.2f, 0.05f, SliderAttribute.SliderType.Float, description: "View-depth hit tolerance in meters. Larger accepts more blockers and more false hits; this is not light-source softness.")]
+    [Checkbox(description: "Soften the contact umbra edge (1D filter perpendicular to the light, ~3 cm virtual source). Off keeps the crisp first-hit. Quality sets tap count (Low/Medium 4, High/Ultra 8). Independent of atlas soft.")]
+    public bool SoftContact
+    {
+        get => softContact;
+        set => SetField(ref softContact, value);
+    }
+
+    [Slider(0.2f, 1.2f, 0.05f, SliderAttribute.SliderType.Float, description: "Euclidean metres from the 3D light ray (plus a texel footprint). Larger accepts more blockers and more false hits; this is not light-source softness.")]
     public float Thickness
     {
         get => thickness;
@@ -148,7 +156,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref useLightViews, value);
     }
 
-    [Slider(0f, 64f, 1f, SliderAttribute.SliderType.Integer, label: "Light-view cap", description: "How many closest point lights get a cube atlas (mesh + optional AABB). Default 4. 0 still keeps the mesh cap at 4. Max 64.")]
+    [Slider(0f, 64f, 1f, SliderAttribute.SliderType.Integer, label: "Light-view cap", description: "Extra ceiling on atlas lights. Quality already caps Low=1 / Medium=2 / High·Ultra=4. 0 uses the quality cap.")]
     public int CubeLightCap
     {
         get => cubeLightCap;

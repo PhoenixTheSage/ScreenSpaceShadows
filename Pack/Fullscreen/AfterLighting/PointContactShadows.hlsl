@@ -16,20 +16,22 @@
 #define ShadowSource  AnomalyPassUniform2.y
 #define DebugView     AnomalyPassUniform2.z
 #define DebugAtlasRow AnomalyPassUniform2.w
-#define SingleLight   AnomalyPassUniform3.x
+#define SingleLight      AnomalyPassUniform3.x
+#define AtlasSoft        AnomalyPassUniform3.y
+#define ContactSoftTaps  AnomalyPassUniform3.z
 
 #define AnomalyPlayerDepth       AnomalyPackSrv0
 #define AnomalyOccupancy         AnomalyPackSrv1
 #define AnomalyPointShadowAtlas  AnomalyPackSrv2
 
-#define MAX_STEPS 192
+#define MAX_STEPS 48
 // PrepareLights fills tiles in race order. frame_.Light.maxTileLights is the
 // global list stride (256–4096), not a per-tile cap. Eval BRDF for many;
 // march the brightest MaxLights by photometric energy.
-#define MAX_EVAL 64
+#define MAX_EVAL 32
 #define MAX_MARCH 12
 #define MAX_OCC_STEPS 16
-#define MAX_CUBE_LIGHTS 64
+#define MAX_CUBE_LIGHTS 8
 #define TILE_SIZE 16
 #define OCC_DIM 64
 #define OCC_VOXEL 2.0
@@ -78,6 +80,9 @@ float ShadowRange(AnomalyPointLight light, float maxDist)
 
 bool PointLightDir(AnomalyPointLight light, float3 viewPos, float shadowRange, out float3 L, out float distance)
 {
+    // Same view-space vector LightPoint and the cube atlas use (cube then
+    // rotates it with extras InvViewAt0). Do not round-trip extras WorldToView
+    // — that transpose left contact on a camera-locked axis while atlas was world.
     float3 toLight = light.positionView - viewPos;
     distance = length(toLight);
     if (distance >= shadowRange || distance < 1e-4)
@@ -89,6 +94,23 @@ bool PointLightDir(AnomalyPointLight light, float3 viewPos, float shadowRange, o
     return true;
 }
 
+// Rank contact marches by geometry + attenuation only. Full MaterialRadiance
+// includes V/specular, so rotating the camera swapped which lights were in the
+// top-N and the umbra direction crawled with the view.
+float MarchScore(AnomalyPointLight light, float3 viewPos, float3 N)
+{
+    float3 L;
+    float distance;
+    if (!PointLightDir(light, viewPos, light.range, L, distance))
+        return 0;
+    float ndotl = saturate(dot(N, L));
+    if (ndotl <= 0)
+        return 0;
+    float2 attenuation = GetAttenuation(distance, light.range, light.fallOff);
+    float luma = dot(light.color, 1.0 / 3.0);
+    return attenuation.x * attenuation.y * luma * ndotl * light.diffuseFactor;
+}
+
 float2 ViewToUv(float3 viewPos)
 {
     // GAP: Slice AI — unjittered view + jitter-matched depth sample.
@@ -96,10 +118,11 @@ float2 ViewToUv(float3 viewPos)
     return AnomalyViewToDepthUv(viewPos);
 }
 
-// InvViewAt0 rows (same expansion as Aurora / clouds). mul(M, v) transposes.
+// Camera-rel world. OccupancySplat / cube faces use extras InvViewAt0, not
+// Frame inv_view (that multiply followed the camera).
 float3 ViewToWorldAt0(float3 viewPos)
 {
-    return mul(viewPos, (float3x3)frame_.Environment.inv_view_matrix);
+    return AnomalyViewToWorldAt0(viewPos);
 }
 
 float OccupancyAt(float3 worldAt0)
@@ -149,39 +172,76 @@ uint2 AtlasSize()
 
 float SampleCubeRow(uint row, float3 dir, float dist)
 {
+    // Soft 4×4 tent is High/Ultra only — 16 Loads × every matched light
+    // was the AfterLighting cliff when Quality did not change cost.
+    if (AtlasSoft > 0.5)
+        return AnomalyPointShadowVisibilitySoft(AnomalyPointShadowAtlas, row, dir, dist, 0.04);
     return AnomalyPointShadowVisibility(AnomalyPointShadowAtlas, row, dir, dist, 0.04);
 }
 
-float CubeVisibility(float3 viewPos, float3 lightViewPos, float range, out bool capturedCharacter)
+// Match against preloaded header row (viewPos.xyz + range). Avoids a
+// GetDimensions + header Load per tile light.
+float CubeVisibilityFromHeaders(float4 headers[MAX_CUBE_LIGHTS], uint count,
+    float3 viewPos, float3 lightViewPos, float range, out bool capturedCharacter)
 {
     capturedCharacter = false;
-    uint2 atlasSize = AtlasSize();
-    if (atlasSize.y < 2)
+    if (count == 0)
         return 1;
-    uint faceRes = max(atlasSize.x / 6, 1);
-    uint count = min((atlasSize.y - 1) / faceRes, MAX_CUBE_LIGHTS);
     float3 toPoint = viewPos - lightViewPos;
     float dist = length(toPoint);
     if (dist < 1e-4 || dist > range)
         return 1;
-    // Atlas faces are anchored to world axes, independent of camera rotation.
-    float3 dir = ViewToWorldAt0(toPoint / dist);
+    float tol = max(0.05, range * 0.02);
+    float rangeTol = max(0.05, range * 0.02);
+    float best = 1e10;
+    uint row = 0xffffffffu;
     [loop]
     for (uint i = 0; i < MAX_CUBE_LIGHTS; i++)
     {
         if (i >= count)
             break;
-        float4 slot = AnomalyPointShadowAtlas.Load(int3(i, 0, 0));
-        if (slot.w < 0.05)
+        float4 slot = headers[i];
+        if (slot.w < 0.05 || abs(slot.w - range) > rangeTol)
             continue;
-        if (distance(slot.xyz, lightViewPos) < 0.001 && abs(slot.w - range) < 0.001)
+        float d = distance(slot.xyz, lightViewPos);
+        if (d < best)
         {
-            capturedCharacter = atlasSize.x >= 66 && AnomalyPointShadowAtlas.Load(int3(65, 0, 0)).w == 1;
-            return SampleCubeRow(i, dir, dist);
+            best = d;
+            row = i;
         }
     }
+    if (row == 0xffffffffu || best > tol)
+        return 1;
+    float3 dir = ViewToWorldAt0(toPoint / dist);
+    uint2 atlasSize = AtlasSize();
+    capturedCharacter = atlasSize.x >= 66 && AnomalyPointShadowAtlas.Load(int3(65, 0, 0)).w == 1;
+    return SampleCubeRow(row, dir, dist);
+}
 
-    return 1;
+uint LoadAtlasHeaders(out float4 headers[MAX_CUBE_LIGHTS])
+{
+    [unroll] for (uint z = 0; z < MAX_CUBE_LIGHTS; z++)
+        headers[z] = 0;
+    uint2 atlasSize = AtlasSize();
+    if (atlasSize.y < 2)
+        return 0;
+    uint faceRes = max(atlasSize.x / 6, 1);
+    uint count = min((atlasSize.y - 1) / faceRes, MAX_CUBE_LIGHTS);
+    [loop]
+    for (uint i = 0; i < MAX_CUBE_LIGHTS; i++)
+    {
+        if (i >= count)
+            break;
+        headers[i] = AnomalyPointShadowAtlas.Load(int3(i, 0, 0));
+    }
+    return count;
+}
+
+float CubeVisibility(float3 viewPos, float3 lightViewPos, float range, out bool capturedCharacter)
+{
+    float4 headers[MAX_CUBE_LIGHTS];
+    uint count = LoadAtlasHeaders(headers);
+    return CubeVisibilityFromHeaders(headers, count, viewPos, lightViewPos, range, capturedCharacter);
 }
 
 void InsertTop(inout float topLuma[MAX_MARCH], inout uint topEval[MAX_MARCH],
@@ -285,19 +345,20 @@ float4 __pixel_shader(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Targ
     float3 N = AnomalyLightingN(nView);
     float3 viewPos = AnomalyLightingViewPos(pos.xy, linearDepth);
     float3 viewPosMarch = AnomalyLightingViewPosUnjittered(pos.xy, linearDepth);
-    float3 geometricNormal = cross(ddx(viewPosMarch), ddy(viewPosMarch));
-    float normalLength = dot(geometricNormal, geometricNormal);
-    geometricNormal = normalLength > 1e-10 ? geometricNormal * rsqrt(normalLength) : nView;
-    geometricNormal *= dot(geometricNormal, nView) < 0 ? -1 : 1;
     float3 V = -normalize(compute_screen_ray(AnomalyLightingUv(pos.xy)));
     float3 albedo = SurfaceAlbedo(g0.rgb, g2.r);
     float3 f0 = SurfaceF0(g0.rgb, g2.r);
     float gloss = g2.g;
     float ao = saturate(1 - (1 - max(g1.b, 0.01)) * frame_.Light.aoPointLight);
 
-    uint steps = (uint)clamp(StepCount, 12, MAX_STEPS);
+    uint steps = (uint)clamp(StepCount, 8, MAX_STEPS);
     float thickness = clamp(Thickness, 0.2, 1.2);
     float maxDist = max(MaxDistance, 0.01);
+
+    float4 atlasHeaders[MAX_CUBE_LIGHTS];
+    uint atlasCount = 0;
+    if (UseAtlas > 0.5 && (ShadowSource < 0.5 || ShadowSource > 1.5))
+        atlasCount = LoadAtlasHeaders(atlasHeaders);
 
     float topLuma[MAX_MARCH];
     uint topEval[MAX_MARCH];
@@ -326,15 +387,19 @@ float4 __pixel_shader(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Targ
             if (atlasSize.x < 6 || atlasSize.y <= 1 || row >= (atlasSize.y - 1) / max(atlasSize.x / 6, 1))
                 continue;
             float4 selected = AnomalyPointShadowAtlas.Load(int3(row, 0, 0));
-            if (selected.w < 0.05 || distance(selected.xyz, findLight.positionView) > 0.001 || abs(selected.w - findLight.range) > 0.001)
+            float tol = max(0.05, findLight.range * 0.02);
+            if (selected.w < 0.05 || distance(selected.xyz, findLight.positionView) > tol ||
+                abs(selected.w - findLight.range) > tol)
                 continue;
         }
         float3 findE = PointUnshadowed(findLight, viewPos, N, V, albedo, f0, gloss, ao);
         unshadowedTotal += findE;
-        if (UseAtlas > 0.5 && (ShadowSource < 0.5 || ShadowSource > 1.5))
+        // Skip atlas when this light contributes no energy — still rank for contact.
+        if (atlasCount > 0 && dot(findE, 1.0 / 3.0) > 1e-5)
         {
             bool capturedCharacter;
-            float atlasVis = CubeVisibility(viewPosMarch, findLight.positionView, findLight.range, capturedCharacter);
+            float atlasVis = CubeVisibilityFromHeaders(atlasHeaders, atlasCount,
+                viewPosMarch, findLight.positionView, findLight.range, capturedCharacter);
             removed += findE * (1 - atlasVis);
             minVis = min(minVis, atlasVis);
         }
@@ -343,7 +408,7 @@ float4 __pixel_shader(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Targ
         float dummyDist;
         if (!PointLightDir(findLight, viewPosMarch, findRange, dummyL, dummyDist))
             continue;
-        InsertTop(topLuma, topEval, marchCap, dot(findE, 1.0 / 3.0), findI);
+        InsertTop(topLuma, topEval, marchCap, MarchScore(findLight, viewPosMarch, nView), findI);
     }
 
     [loop]
@@ -367,10 +432,12 @@ float4 __pixel_shader(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Targ
         float marchDist = min(distance, maxDist);
         float atlasVis = 1;
         bool capturedCharacter = false;
-        if (UseAtlas > 0.5 && ShadowSource < 0.5)
-            atlasVis = CubeVisibility(viewPosMarch, light.positionView, light.range, capturedCharacter);
+        if (atlasCount > 0 && ShadowSource < 0.5)
+            atlasVis = CubeVisibilityFromHeaders(atlasHeaders, atlasCount,
+                viewPosMarch, light.positionView, light.range, capturedCharacter);
         float vis = AnomalyContactVisibilityExcludingPlayer(AnomalyLinearDepth,
-            AnomalyPlayerDepth, viewPosMarch, geometricNormal, L, marchDist, thickness, steps);
+            AnomalyPlayerDepth, viewPosMarch, nView, L, marchDist, thickness, steps,
+            (uint)ContactSoftTaps);
         float contact = vis;
         vis = min(vis, atlasVis);
         if (vis < 0.45 && contact > 0.75)

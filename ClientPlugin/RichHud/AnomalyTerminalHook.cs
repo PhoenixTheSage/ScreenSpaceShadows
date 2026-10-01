@@ -88,11 +88,15 @@ internal static class AnomalyTerminalHook
         Invoke(t, page, "Dropdown", "Quality", typeof(ShadowQuality),
             (Func<object>)(() => Config.Current.Quality),
             (Action<object>)(v => Set(() => Config.Current.Quality = (ShadowQuality)v)),
-            "March steps, lights per pixel, and default ray distance");
+            "March steps, lights per pixel, atlas size, and contact soft taps when Soft Contact is on");
+        Invoke(t, page, "Checkbox", "Soft Contact",
+            (Func<bool>)(() => Config.Current.SoftContact),
+            (Action<bool>)(v => Set(() => Config.Current.SoftContact = v)),
+            "Soften the contact umbra edge only (1D, perpendicular to the light). Off keeps crisp first-hit umbras. Quality: Low/Medium 4 taps, High/Ultra 8. Independent of atlas soft.");
         Invoke(t, page, "Slider", "Thickness", 0.2f, 1.2f,
             (Func<float>)(() => Config.Current.Thickness),
             (Action<float>)(v => Set(() => Config.Current.Thickness = v)),
-            "View-depth hit tolerance in meters; larger accepts more blockers and more false hits, not a penumbra control", 0.05f);
+            "Euclidean metres from the 3D light ray; larger accepts more blockers and more false hits, not a penumbra control", 0.05f);
         Invoke(t, page, "Slider", "Max distance", 0f, 16f,
             (Func<float>)(() => Config.Current.MaxDistance),
             (Action<float>)(v => Set(() => Config.Current.MaxDistance = v)),

@@ -26,26 +26,29 @@ internal static class ShadowRenderer
             return;
         }
 
-        var packed = PackConstants(config, debug);
+        QualityBudget(config.Quality, out var steps, out var maxLights, out var presetDistance,
+            out var face, out var atlasCap, out var atlasSoft, out var contactSoftTaps);
+        if (!config.SoftContact)
+            contactSoftTaps = 0f;
+        var packed = PackConstants(config, debug, steps, maxLights, presetDistance, atlasSoft,
+            contactSoftTaps);
         AnomalyBridge.SetUniforms(AnomalyBridge.PassId, packed);
         AnomalyBridge.SetUniforms(AnomalyBridge.DebugPassId, packed);
 
-        var cubeCap = config.CubeLightCap;
-        if (cubeCap < 4)
-            cubeCap = 4;
+        // Quality ceilings the expensive atlas. CubeLightCap is an extra ceiling.
+        var cubeCap = config.CubeLightCap <= 0 ? atlasCap : System.Math.Min(config.CubeLightCap, atlasCap);
+        if (cubeCap < 1)
+            cubeCap = 1;
         if (cubeCap > 64)
             cubeCap = 64;
-        var face = config.Quality == ShadowQuality.Ultra ? 1024 :
-            config.Quality == ShadowQuality.High ? 512 : 256;
         AnomalyBridge.RequestPointShadows(cubeCap, face);
         AnomalyBridge.RequestWorldBoxes(config.UseLightViews && config.CubeLightCap > 0);
         AnomalyBridge.RequestOccupancy(config.UseOccupancy);
     }
 
-    static float[] PackConstants(Config config, bool debug)
+    static float[] PackConstants(Config config, bool debug, float steps, float maxLights,
+        float presetDistance, float atlasSoft, float contactSoftTaps)
     {
-        // MaxLights is the contact-march cap. The shader evaluates up to 64 tile lights.
-        QualityPreset(config.Quality, out var steps, out var maxLights, out var presetDistance);
         var maxDistance = config.MaxDistance > 0.01f ? config.MaxDistance : presetDistance;
         return new[]
         {
@@ -62,32 +65,59 @@ internal static class ShadowRenderer
             (float)config.DebugView,
             (float)System.Math.Min(System.Math.Max(config.DebugAtlasRow, 0), 63),
             config.SingleLight ? 1f : 0f,
+            atlasSoft,
+            contactSoftTaps,
+            0f,
         };
     }
 
-    static void QualityPreset(ShadowQuality quality, out float steps, out float maxLights, out float distance)
+    /// <summary>
+    /// Steps / contact lights / reach scale the IsolatedSub march.
+    /// Face / atlasCap / atlasSoft scale the character cube atlas.
+    /// contactSoftTaps is the 1D edge-filter sample count when Soft Contact
+    /// is on (0 when off). Not a disk around the blocker.
+    /// </summary>
+    static void QualityBudget(ShadowQuality quality, out float steps, out float maxLights,
+        out float distance, out int face, out int atlasCap, out float atlasSoft,
+        out float contactSoftTaps)
     {
         switch (quality)
         {
             case ShadowQuality.Low:
-                steps = 48f;
+                steps = 16f;
                 maxLights = 4f;
                 distance = 0.5f;
+                face = 64;
+                atlasCap = 1;
+                atlasSoft = 0f;
+                contactSoftTaps = 4f;
                 break;
             case ShadowQuality.High:
-                steps = 128f;
+                steps = 32f;
                 maxLights = 8f;
                 distance = 1.5f;
+                face = 128;
+                atlasCap = 4;
+                atlasSoft = 1f;
+                contactSoftTaps = 8f;
                 break;
             case ShadowQuality.Ultra:
-                steps = 192f;
+                steps = 48f;
                 maxLights = 10f;
                 distance = 2f;
+                face = 256;
+                atlasCap = 4;
+                atlasSoft = 1f;
+                contactSoftTaps = 8f;
                 break;
             default:
-                steps = 96f;
+                steps = 24f;
                 maxLights = 6f;
                 distance = 1f;
+                face = 128;
+                atlasCap = 2;
+                atlasSoft = 0f;
+                contactSoftTaps = 4f;
                 break;
         }
     }
