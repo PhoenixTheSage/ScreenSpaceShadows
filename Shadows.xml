@@ -24,6 +24,8 @@ Requires the Anomaly Shader Framework. Configure under Anomaly Shaders → Scree
         <Id>A9C29274-E447-49EE-881B-C980E6D190FD</Id>
     </DependencyIds>
 
+    <Platforms>Windows,Linux</Platforms>
+
     <Asset Name="AnomalyPack" Path="Pack" />
 
     <Commit>TODO Git commit hash</Commit>
