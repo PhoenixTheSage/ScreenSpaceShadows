@@ -28,9 +28,6 @@ internal static class AnomalyTerminalHook
                 return false;
 
             Populate(page);
-            var status = RequestStatusPage();
-            if (status != null)
-                PopulateStatus(status);
             installed = true;
             MyLog.Default.WriteLine($"{Plugin.Name}: Rich HUD page under Anomaly Shaders / {FolderTitle} / {SettingsPage}");
             return true;
@@ -134,55 +131,6 @@ internal static class AnomalyTerminalHook
             (Func<float>)(() => Config.Current.CubeLightCap),
             (Action<float>)(v => Set(() => Config.Current.CubeLightCap = (int)v)),
             "Closest point lights with a cube atlas. Default 4. Values below 4 retain four mesh-map slots. Max 64.", 1f);
-        Invoke(t, page, "Category", "Debug");
-        Invoke(t, page, "Button", "Show Status",
-            (Action)ShadowsStatus.Show,
-            "Compose, dest, last IsolatedSub merge/skip, catalog binds.");
-    }
-
-    static void PopulateStatus(object page)
-    {
-        var t = page.GetType();
-        Invoke(t, page, "Category", "Debug");
-        Invoke(t, page, "Button", "Show Status",
-            (Action)ShadowsStatus.Show,
-            "Compose, dest, last IsolatedSub merge/skip, catalog binds.");
-    }
-
-    static object RequestStatusPage()
-    {
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            if (assembly == null || assembly == typeof(AnomalyTerminalHook).Assembly)
-                continue;
-
-            Type registry;
-            try
-            {
-                registry = assembly.GetType(RegistryTypeName, false, false);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (registry == null)
-                continue;
-
-            var requestFolder = registry.GetMethod("RequestFolderPage", BindingFlags.Public | BindingFlags.Static,
-                null, new[] { typeof(string), typeof(string) }, null);
-            try
-            {
-                return requestFolder?.Invoke(null, new object[] { FolderTitle, StatusPage });
-            }
-            catch (Exception e)
-            {
-                MyLog.Default.Warning($"{Plugin.Name}: RequestFolderPage Status failed: {e.Message}");
-                return null;
-            }
-        }
-
-        return null;
     }
 
     static void Set(Action apply)

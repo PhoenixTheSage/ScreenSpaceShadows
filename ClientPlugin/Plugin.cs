@@ -10,8 +10,8 @@ using VRage.Plugins;
 using VRage.Utils;
 
 #if !LOCAL_BUILD
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.3.1.0")]
+[assembly: AssemblyFileVersion("1.3.1.0")]
 #endif
 
 namespace ClientPlugin;
@@ -39,6 +39,7 @@ public class Plugin : IPlugin
 
     public void Update()
     {
+        PluginStatusPage.TryInstall("Screen Space Shadows", Config.ShowStatus);
         AnomalyRenderer.Observe();
         if (AnomalyRenderer.LinuxRequiresGuest)
             return;

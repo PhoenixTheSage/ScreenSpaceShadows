@@ -13,6 +13,7 @@ public static class ShadowsStatus
         get
         {
             var sb = new StringBuilder();
+            sb.AppendLine(PluginStatusPage.RendererLine);
             AppendConfig(sb);
             sb.AppendLine();
             AppendAnomaly(sb);
